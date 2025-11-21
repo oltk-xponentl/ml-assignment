@@ -57,11 +57,14 @@ class ECSSDDataset(Dataset):
         ds_idx = self.indices[idx]
 
         sample = self.ds[ds_idx]
+        # Deep Lake tensors to numpy arrays
         img_arr = sample["images"].numpy()
         mask_arr = sample["masks"].numpy()
 
-        image = self._to_pil_image(img_arr)   # RGB image
-        mask = self._to_pil_image(mask_arr)   # grayscale mask
+        # Force image to RGB (3 channels), mask to L (1 channel)
+        image = self._to_pil_image(img_arr).convert("RGB")
+        mask = self._to_pil_image(mask_arr).convert("L")
+
 
         target_size = self.size
 
