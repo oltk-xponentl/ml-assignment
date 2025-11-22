@@ -1,8 +1,8 @@
 import random
 from typing import List, Tuple
 
-import numpy as np
 import deeplake
+import numpy as np
 from PIL import Image
 
 import torch
@@ -12,12 +12,11 @@ import torchvision.transforms.functional as TF
 
 
 class ECSSDDataset(Dataset):
-    """Wraps the Deep Lake ECSSD dataset for PyTorch.
+    """Deep Lake ECSSD dataset wrapper for PyTorch.
 
-    It takes a Deep Lake dataset object and a list of indices, applies
-    joint transforms on image and mask, and returns:
-      - image: float tensor [3, H, W] in [0, 1]
-      - mask: float tensor [1, H, W] with values 0 or 1
+    Returns:
+      image: float tensor [3, H, W] in [0, 1]
+      mask:  float tensor [1, H, W] with values 0 or 1
     """
 
     def __init__(
@@ -35,36 +34,43 @@ class ECSSDDataset(Dataset):
     def __len__(self) -> int:
         return len(self.indices)
 
-    def _to_pil_image(self, arr: np.ndarray) -> Image.Image:
-        """Convert a Deep Lake numpy array to a PIL image.
-
-        Handles both HWC and CHW formats gracefully.
-        """
-        arr = np.asarray(arr)
-
-        if arr.ndim == 3 and arr.shape[0] in (1, 3):
-            arr = np.transpose(arr, (1, 2, 0))
-
-        if arr.ndim == 3 and arr.shape[2] == 1:
-            arr = arr[:, :, 0]
-
-        if arr.dtype != np.uint8:
-            arr = np.clip(arr, 0, 255).astype(np.uint8)
-
-        return Image.fromarray(arr)
-
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         ds_idx = self.indices[idx]
-
         sample = self.ds[ds_idx]
-        # Deep Lake tensors to numpy arrays
+
+        # ---------- IMAGE ----------
         img_arr = sample["images"].numpy()
+        img_arr = np.asarray(img_arr)
+
+        if img_arr.ndim == 3:
+            if img_arr.shape[0] in (1, 3) and img_arr.shape[-1] not in (1, 3):
+                img_arr = np.transpose(img_arr, (1, 2, 0))
+        elif img_arr.ndim == 2:
+            img_arr = img_arr[..., None]
+
+        if img_arr.ndim == 3 and img_arr.shape[2] == 1:
+            img_arr = np.repeat(img_arr, 3, axis=2)
+
+        img_arr = img_arr.astype("float32")
+        i_min, i_max = float(img_arr.min()), float(img_arr.max())
+        if i_max <= 1.5:
+            img_arr = img_arr * 255.0
+        img_arr = np.clip(img_arr, 0.0, 255.0).astype("uint8")
+
+        image = Image.fromarray(img_arr).convert("RGB")
+
         mask_arr = sample["masks"].numpy()
+        mask_arr = np.asarray(mask_arr)
 
-        # Force image to RGB (3 channels), mask to L (1 channel)
-        image = self._to_pil_image(img_arr).convert("RGB")
-        mask = self._to_pil_image(mask_arr).convert("L")
+        if mask_arr.ndim == 3 and mask_arr.shape[-1] == 1:
+            mask_arr = mask_arr[..., 0]
+        if mask_arr.ndim > 2 and mask_arr.shape[0] == 1:
+            mask_arr = mask_arr[0]
 
+        mask_arr = mask_arr.astype("float32")  # 0 or 1
+
+        mask_img = (mask_arr * 255.0).round().clip(0, 255).astype("uint8")
+        mask = Image.fromarray(mask_img).convert("L")
 
         target_size = self.size
 
@@ -97,11 +103,12 @@ class ECSSDDataset(Dataset):
                 interpolation=TF.InterpolationMode.NEAREST,
             )
 
-        image_t = TF.to_tensor(image)
+        image_t = TF.to_tensor(image)     
+        mask_t = TF.to_tensor(mask)       
 
-        mask_t = TF.to_tensor(mask)
         if mask_t.shape[0] > 1:
             mask_t = mask_t[:1, ...]
+
         mask_t = (mask_t > 0.5).float()
 
         return image_t, mask_t
@@ -118,16 +125,16 @@ def create_dataloaders(
 ):
     """Create train, val, test DataLoaders from Deep Lake ECSSD.
 
-    The root_dir and subdir arguments are kept for compatibility with
-    other datasets, but are ignored for now. Everything is streamed from hub://activeloop/ecssd
+    root_dir and subdir args are kept for compatibility but ignored.
+    Everything is streamed from hub://activeloop/ecssd.
     """
-
     print("Loading ECSSD from Deep Lake hub://activeloop/ecssd")
     ds = deeplake.load("hub://activeloop/ecssd", read_only=True)
-
     n = len(ds)
     if n == 0:
         raise RuntimeError("Deep Lake ECSSD dataset returned zero samples")
+
+    print(f"Total samples {n}")
 
     indices = list(range(n))
     random.seed(seed)
@@ -141,7 +148,6 @@ def create_dataloaders(
     val_indices = indices[n_train : n_train + n_val]
     test_indices = indices[n_train + n_val :]
 
-    print(f"Total samples {n}")
     print(f"Train {len(train_indices)}, Val {len(val_indices)}, Test {len(test_indices)}")
 
     train_ds = ECSSDDataset(ds, train_indices, size=size, augment=True)
@@ -168,3 +174,16 @@ def create_dataloaders(
     )
 
     return train_loader, val_loader, test_loader
+
+
+if __name__ == "__main__":
+    train_loader, val_loader, test_loader = create_dataloaders(
+        size=128,
+        batch_size=4,
+        num_workers=0,
+    )
+    images, masks = next(iter(train_loader))
+    print("Images shape:", images.shape)
+    print("Masks shape:", masks.shape)
+    print("Mask min:", masks.min().item(), "max:", masks.max().item())
+    print("Mask unique values:", torch.unique(masks))
