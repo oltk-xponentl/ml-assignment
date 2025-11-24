@@ -36,6 +36,11 @@ MODEL_VERSIONS = {
     "exp_folder": "experiments/v2.5_augmentation",
     "size": 224,
     "config": {"use_bn": False}
+    },
+    "v3: Batch Norm": {
+        "exp_folder": "experiments/v3_batchnorm",
+        "size": 224,
+        "config": {"use_bn": True} # 
     }
 }
 
