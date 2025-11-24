@@ -1,0 +1,10 @@
+{
+  "precision": 0.6444,
+  "recall": 0.7477,
+  "f1": 0.6555,
+  "iou": 0.5116,
+  "mae": 0.227,
+  "train_duration": "0:11:54",
+  "epochs_trained": 25,
+  "best_val_loss": 0.6322
+}

@@ -22,12 +22,16 @@ MODEL_VERSIONS = {
         "size": 128,
         "config": {"use_bn": False}
     },
-    # Future Example:
-    # "v2: HighRes": {
-    #    "exp_folder": "experiments/v2_highres",
-    #    "size": 224, 
-    #    "config": {"use_bn": False}
-    # }
+    "v2: HighRes": {
+        "exp_folder": "experiments/v2_highres",
+        "size": 224,
+        "config": {"use_bn": False}
+    },
+    "v2: LowRes": {
+        "exp_folder": "experiments/v2_lowres",
+        "size": 64,
+        "config": {"use_bn": False}
+    }
 }
 
 # ==========================================

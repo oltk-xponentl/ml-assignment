@@ -70,7 +70,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train SOD model")
     # Config
     parser.add_argument("--data-root", type=str, default="data/ecssd")
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--size", type=int, default=128)
