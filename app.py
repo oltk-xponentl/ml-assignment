@@ -31,6 +31,11 @@ MODEL_VERSIONS = {
         "exp_folder": "experiments/v2_lowres",
         "size": 64,
         "config": {"use_bn": False}
+    },
+    "v2.5: Augmentation": {
+    "exp_folder": "experiments/v2.5_augmentation",
+    "size": 224,
+    "config": {"use_bn": False}
     }
 }
 

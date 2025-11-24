@@ -38,7 +38,7 @@ class ECSSDDataset(Dataset):
         ds_idx = self.indices[idx]
         sample = self.ds[ds_idx]
 
-        # ---------- IMAGE ----------
+        # ---------- IMAGE PREP ----------
         img_arr = sample["images"].numpy()
         img_arr = np.asarray(img_arr)
 
@@ -59,6 +59,7 @@ class ECSSDDataset(Dataset):
 
         image = Image.fromarray(img_arr).convert("RGB")
 
+        # ---------- MASK PREP ----------
         mask_arr = sample["masks"].numpy()
         mask_arr = np.asarray(mask_arr)
 
@@ -74,35 +75,52 @@ class ECSSDDataset(Dataset):
 
         target_size = self.size
 
+        # ---------- AUGMENTATION ----------
         if self.augment:
-            resize_size = int(target_size * 1.1)
+            # 1. Resize slightly larger for cropping flexibility
+            resize_size = int(target_size * 1.15)
             image = TF.resize(image, (resize_size, resize_size))
-            mask = TF.resize(
-                mask,
-                (resize_size, resize_size),
-                interpolation=TF.InterpolationMode.NEAREST,
-            )
+            mask = TF.resize(mask, (resize_size, resize_size), interpolation=TF.InterpolationMode.NEAREST)
 
+            # 2. Random Rotation (-15 to 15 degrees)
+            if random.random() < 0.5:
+                angle = random.randint(-15, 15)
+                image = TF.rotate(image, angle)
+                mask = TF.rotate(mask, angle)
+
+            # 3. Horizontal Flip
             if random.random() < 0.5:
                 image = TF.hflip(image)
                 mask = TF.hflip(mask)
 
-            brightness_factor = 0.8 + 0.4 * random.random()
-            image = TF.adjust_brightness(image, brightness_factor)
+            # 4. Color Jitter (Brightness, Contrast, Saturation) - Image Only
+            # Note: We apply this before crop to ensure consistency
+            if random.random() < 0.8: # Apply often
+                # Brightness
+                if random.random() < 0.5:
+                    factor = random.uniform(0.8, 1.2)
+                    image = TF.adjust_brightness(image, factor)
+                # Contrast
+                if random.random() < 0.5:
+                    factor = random.uniform(0.8, 1.2)
+                    image = TF.adjust_contrast(image, factor)
+                # Saturation
+                if random.random() < 0.5:
+                    factor = random.uniform(0.8, 1.2)
+                    image = TF.adjust_saturation(image, factor)
 
+            # 5. Random Crop to final size
             i, j, h, w = T.RandomCrop.get_params(
                 image, output_size=(target_size, target_size)
             )
             image = TF.crop(image, i, j, h, w)
             mask = TF.crop(mask, i, j, h, w)
         else:
+            # Validation/Test: Just Resize
             image = TF.resize(image, (target_size, target_size))
-            mask = TF.resize(
-                mask,
-                (target_size, target_size),
-                interpolation=TF.InterpolationMode.NEAREST,
-            )
+            mask = TF.resize(mask, (target_size, target_size), interpolation=TF.InterpolationMode.NEAREST)
 
+        # ---------- TO TENSOR ----------
         image_t = TF.to_tensor(image)     
         mask_t = TF.to_tensor(mask)       
 
@@ -123,11 +141,7 @@ def create_dataloaders(
     num_workers: int = 0,
     seed: int = 42,
 ):
-    """Create train, val, test DataLoaders from Deep Lake ECSSD.
-
-    root_dir and subdir args are kept for compatibility but ignored.
-    Everything is streamed from hub://activeloop/ecssd.
-    """
+    """Create train, val, test DataLoaders from Deep Lake ECSSD."""
     print("Loading ECSSD from Deep Lake hub://activeloop/ecssd")
     ds = deeplake.load("hub://activeloop/ecssd", read_only=True)
     n = len(ds)
@@ -150,6 +164,7 @@ def create_dataloaders(
 
     print(f"Train {len(train_indices)}, Val {len(val_indices)}, Test {len(test_indices)}")
 
+    # Train gets augment=True, others get False
     train_ds = ECSSDDataset(ds, train_indices, size=size, augment=True)
     val_ds = ECSSDDataset(ds, val_indices, size=size, augment=False)
     test_ds = ECSSDDataset(ds, test_indices, size=size, augment=False)
@@ -174,16 +189,3 @@ def create_dataloaders(
     )
 
     return train_loader, val_loader, test_loader
-
-
-if __name__ == "__main__":
-    train_loader, val_loader, test_loader = create_dataloaders(
-        size=128,
-        batch_size=4,
-        num_workers=0,
-    )
-    images, masks = next(iter(train_loader))
-    print("Images shape:", images.shape)
-    print("Masks shape:", masks.shape)
-    print("Mask min:", masks.min().item(), "max:", masks.max().item())
-    print("Mask unique values:", torch.unique(masks))
