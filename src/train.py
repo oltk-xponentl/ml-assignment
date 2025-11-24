@@ -1,42 +1,28 @@
 import argparse
 import time
+import json
+import datetime
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from data_loader import create_dataloaders
-from model import create_model
+from sod_model import create_model
 from metrics import iou_loss, compute_iou, compute_batch_metrics
 
-
-def train_one_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-) -> dict:
+def train_one_epoch(model, loader, optimizer, device):
     model.train()
     bce_loss_fn = nn.BCEWithLogitsLoss()
-
-    total_loss = 0.0
-    total_iou = 0.0
-    num_samples = 0
+    total_loss, total_iou, num_samples = 0.0, 0.0, 0
 
     for images, masks in tqdm(loader, desc="Train", leave=False):
-        images = images.to(device)
-        masks = masks.to(device)
-
+        images, masks = images.to(device), masks.to(device)
         optimizer.zero_grad()
         logits = model(images)
-
-        bce = bce_loss_fn(logits, masks)
-        iou_l = iou_loss(logits, masks)
-        loss = bce + 0.5 * iou_l
-
+        loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
         loss.backward()
         optimizer.step()
 
@@ -45,222 +31,146 @@ def train_one_epoch(
         total_iou += compute_iou(logits.detach(), masks.detach()) * batch_size
         num_samples += batch_size
 
-    avg_loss = total_loss / num_samples
-    avg_iou = total_iou / num_samples
-
-    return {"loss": avg_loss, "iou": avg_iou}
-
+    return {"loss": total_loss / num_samples, "iou": total_iou / num_samples}
 
 @torch.no_grad()
-def eval_one_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-) -> dict:
+def eval_one_epoch(model, loader, device):
     model.eval()
     bce_loss_fn = nn.BCEWithLogitsLoss()
-
-    total_loss = 0.0
-    total_iou = 0.0
-    num_samples = 0
+    total_loss, total_iou, num_samples = 0.0, 0.0, 0
 
     for images, masks in tqdm(loader, desc="Val", leave=False):
-        images = images.to(device)
-        masks = masks.to(device)
-
+        images, masks = images.to(device), masks.to(device)
         logits = model(images)
-        bce = bce_loss_fn(logits, masks)
-        iou_l = iou_loss(logits, masks)
-        loss = bce + 0.5 * iou_l
+        loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
 
         batch_size = images.size(0)
         total_loss += loss.item() * batch_size
         total_iou += compute_iou(logits, masks) * batch_size
         num_samples += batch_size
 
-    avg_loss = total_loss / num_samples
-    avg_iou = total_iou / num_samples
-    return {"loss": avg_loss, "iou": avg_iou}
+    return {"loss": total_loss / num_samples, "iou": total_iou / num_samples}
 
-
-def save_checkpoint(
-    path: Path,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    epoch: int,
-    best_val_loss: float,
-) -> None:
-    state = {
+# --- CHECKPOINT HELPERS ---
+def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
+    torch.save({
         "model_state": model.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
-    }
-    torch.save(state, path)
+    }, path)
 
-
-def load_checkpoint(
-    path: Path,
-    model: nn.Module,
-    optimizer: torch.optim.Optimizer,
-) -> tuple:
-    checkpoint = torch.load(path, map_location="cpu")
-    model.load_state_dict(checkpoint["model_state"])
-    optimizer.load_state_dict(checkpoint["optimizer_state"])
-    start_epoch = checkpoint.get("epoch", 0) + 1
-    best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-    print(f"Resuming from epoch {start_epoch}, best_val_loss={best_val_loss:.4f}")
-    return start_epoch, best_val_loss
-
+def load_checkpoint(path, model, optimizer):
+    ckpt = torch.load(path, map_location="cpu")
+    model.load_state_dict(ckpt["model_state"])
+    optimizer.load_state_dict(ckpt["optimizer_state"])
+    return ckpt.get("epoch", 0) + 1, ckpt.get("best_val_loss", float("inf"))
 
 def main():
     parser = argparse.ArgumentParser(description="Train SOD model")
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        default=str(Path(__file__).resolve().parents[1] / "data" / "ecssd"),
-        help="Root directory of ECSSD dataset with images and masks folders",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=20,
-        help="Number of training epochs",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        help="Batch size",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=1e-3,
-        help="Learning rate for Adam",
-    )
-    parser.add_argument(
-        "--size",
-        type=int,
-        default=128,
-        help="Image size to resize to",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Resume training from last checkpoint if available",
-    )
-    parser.add_argument(
-        "--patience",
-        type=int,
-        default=5,
-        help="Number of epochs with no val loss improvement before early stop",
-    )
+    # Config
+    parser.add_argument("--data-root", type=str, default="data/ecssd")
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--size", type=int, default=128)
+    parser.add_argument("--patience", type=int, default=5)
+    
+    # Versioning & Experiments
+    parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
+    parser.add_argument("--use-bn", action="store_true", help="Add Batch Normalization")
+    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+
     args = parser.parse_args()
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device", device)
+    print(f"Device: {device} | Experiment: {args.exp_name}")
 
+    # 1. Setup Directories
+    exp_dir = Path(__file__).resolve().parents[1] / "experiments" / args.exp_name
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    
+    best_ckpt_path = exp_dir / "best_model.pt"
+    last_ckpt_path = exp_dir / "last_checkpoint.pt" 
+
+    # 2. Data & Model
     train_loader, val_loader, test_loader = create_dataloaders(
-        root_dir=args.data_root,
-        size=args.size,
-        batch_size=args.batch_size,
-        num_workers=0,
+        root_dir=args.data_root, size=args.size, batch_size=args.batch_size
     )
-
-    model = create_model().to(device)
+    model = create_model(use_bn=args.use_bn).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
-    ckpt_dir = Path(__file__).resolve().parents[1] / "checkpoints"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    last_ckpt_path = ckpt_dir / "last_checkpoint.pt"
-    best_ckpt_path = ckpt_dir / "best_model.pt"
-
+    # 3. Resume Logic or Start Fresh
     start_epoch = 0
     best_val_loss = float("inf")
-    epochs_without_improvement = 0
+    no_improve = 0
 
     if args.resume and last_ckpt_path.exists():
-        start_epoch, best_val_loss = load_checkpoint(
-            last_ckpt_path, model, optimizer
-        )
-
+        start_epoch, best_val_loss = load_checkpoint(last_ckpt_path, model, optimizer)
+        print(f"Resumed from epoch {start_epoch}")
+    
+    # 4. Training Loop
+    start_total = time.time()
+    
     for epoch in range(start_epoch, args.epochs):
-        start_time = time.time()
-        print(f"\nEpoch {epoch + 1}/{args.epochs}")
-
         train_stats = train_one_epoch(model, train_loader, optimizer, device)
         val_stats = eval_one_epoch(model, val_loader, device)
+        
+        print(f"Epoch {epoch+1}: "
+              f"Train Loss {train_stats['loss']:.4f}, IoU {train_stats['iou']:.4f} | "
+              f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f}")
 
-        elapsed = time.time() - start_time
-        print(
-            f"Train loss {train_stats['loss']:.4f}, IoU {train_stats['iou']:.4f} "
-            f"Val loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f} "
-            f"Time {elapsed:.1f}s"
-        )
+        # SAVE LAST CHECKPOINT (Every Epoch) 
+        save_checkpoint(last_ckpt_path, model, optimizer, epoch, best_val_loss)
 
-        # Save last checkpoint every epoch
-        save_checkpoint(
-            last_ckpt_path,
-            model,
-            optimizer,
-            epoch,
-            best_val_loss,
-        )
-        print(f"Saved checkpoint to {last_ckpt_path}")
-
-        # Track best validation loss
+        # SAVE BEST MODEL (Only on improvement)
         if val_stats["loss"] < best_val_loss - 1e-4:
             best_val_loss = val_stats["loss"]
-            epochs_without_improvement = 0
-            save_checkpoint(
-                best_ckpt_path,
-                model,
-                optimizer,
-                epoch,
-                best_val_loss,
-            )
-            print(f"New best model saved to {best_ckpt_path}")
+            no_improve = 0
+            # Save just weights for the 'best' model to keep it light for inference
+            torch.save(model.state_dict(), best_ckpt_path) 
+            print(f"   New best model saved")
         else:
-            epochs_without_improvement += 1
-            print(
-                f"No improvement in val loss for {epochs_without_improvement} epochs"
-            )
-            if epochs_without_improvement >= args.patience:
-                print("Early stopping triggered")
+            no_improve += 1
+            if no_improve >= args.patience:
+                print("Early stopping triggered.")
                 break
+    
+    duration = str(datetime.timedelta(seconds=int(time.time() - start_total)))
+    print(f"\nTraining finished in {duration}")
 
-    # Final evaluation on test set using best checkpoint
+    # 5. Final Evaluation & JSON Report
     if best_ckpt_path.exists():
-        print("\nEvaluating best model on test set")
-        # Reload best weights
-        state = torch.load(best_ckpt_path, map_location=device)
-        model.load_state_dict(state["model_state"])
-        model.to(device)
-
+        print("Running final test evaluation...")
+        # Load the best weights for evaluation
+        model.load_state_dict(torch.load(best_ckpt_path, map_location=device))
         model.eval()
-        all_metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0, "iou": 0.0, "mae": 0.0}
-        num_batches = 0
-
+        
+        metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0, "iou": 0.0, "mae": 0.0}
+        count = 0
+        
         with torch.no_grad():
             for images, masks in tqdm(test_loader, desc="Test"):
-                images = images.to(device)
-                masks = masks.to(device)
+                images, masks = images.to(device), masks.to(device)
                 logits = model(images)
-                batch_metrics = compute_batch_metrics(logits, masks)
-                for k in all_metrics:
-                    all_metrics[k] += batch_metrics[k]
-                num_batches += 1
+                batch_res = compute_batch_metrics(logits, masks)
+                for k in metrics: metrics[k] += batch_res[k]
+                count += 1
+        
+        # Average metrics
+        final_metrics = {k: round(v / count, 4) for k, v in metrics.items()}
+        
+        # Add metadata
+        final_metrics["train_duration"] = duration
+        final_metrics["epochs_trained"] = epoch + 1
+        final_metrics["best_val_loss"] = round(best_val_loss, 4)
 
-        for k in all_metrics:
-            all_metrics[k] /= max(num_batches, 1)
-
-        print("Test metrics:")
-        for k, v in all_metrics.items():
-            print(f"  {k}: {v:.4f}")
-    else:
-        print("Best checkpoint not found, skipping test evaluation")
-
+        # Save to JSON
+        json_path = exp_dir / "metrics.json"
+        with open(json_path, "w") as f:
+            json.dump(final_metrics, f, indent=2)
+        
+        print(f"Metrics saved to {json_path}")
+        print(final_metrics)
 
 if __name__ == "__main__":
     main()

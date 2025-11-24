@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
 from data_loader import create_dataloaders
-from model import create_model
+from src.sod_model import create_model
 from metrics import compute_batch_metrics
 
 
