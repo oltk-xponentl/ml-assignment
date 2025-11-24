@@ -46,6 +46,11 @@ MODEL_VERSIONS = {
         "exp_folder": "experiments/v4_unet",
         "size": 224,
         "config": {"use_bn": True, "use_skip": True}
+    },
+    "v5: Deep U-Net": {
+        "exp_folder": "experiments/v5_deep_unet",
+        "size": 224,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
     }
 }
 

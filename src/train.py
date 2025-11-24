@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 from tqdm.auto import tqdm
+import matplotlib.pyplot as plt # <--- Added for plotting
 
 from data_loader import create_dataloaders
 from sod_model import create_model
@@ -51,7 +52,6 @@ def eval_one_epoch(model, loader, device):
 
     return {"loss": total_loss / num_samples, "iou": total_iou / num_samples}
 
-# --- CHECKPOINT HELPERS ---
 def save_checkpoint(path, model, optimizer, epoch, best_val_loss):
     torch.save({
         "model_state": model.state_dict(),
@@ -80,6 +80,7 @@ def main():
     parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
     parser.add_argument("--use-bn", action="store_true", help="Add Batch Normalization")
     parser.add_argument("--use-skip", action="store_true", help="Use Skip Connections (U-Net)")
+    parser.add_argument("--deep", action="store_true", help="Use 4-layer Deep Architecture")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
 
     args = parser.parse_args()
@@ -91,23 +92,30 @@ def main():
     exp_dir.mkdir(parents=True, exist_ok=True)
     
     best_ckpt_path = exp_dir / "best_model.pt"
-    last_ckpt_path = exp_dir / "last_checkpoint.pt" 
+    last_ckpt_path = exp_dir / "last_checkpoint.pt"
+    history_path = exp_dir / "history.json" 
 
     # 2. Data & Model
     train_loader, val_loader, test_loader = create_dataloaders(
         root_dir=args.data_root, size=args.size, batch_size=args.batch_size
     )
-    model = create_model(use_bn=args.use_bn, use_skip=args.use_skip).to(device)
+    model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
-    # 3. Resume Logic or Start Fresh
+    # 3. Resume Logic
     start_epoch = 0
     best_val_loss = float("inf")
     no_improve = 0
+    
+    # Initialize history
+    history = {"train_loss": [], "val_loss": [], "train_iou": [], "val_iou": []}
 
     if args.resume and last_ckpt_path.exists():
         start_epoch, best_val_loss = load_checkpoint(last_ckpt_path, model, optimizer)
         print(f"Resumed from epoch {start_epoch}")
+        if history_path.exists():
+            with open(history_path, "r") as f:
+                history = json.load(f)
     
     # 4. Training Loop
     start_total = time.time()
@@ -120,14 +128,20 @@ def main():
               f"Train Loss {train_stats['loss']:.4f}, IoU {train_stats['iou']:.4f} | "
               f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f}")
 
-        # SAVE LAST CHECKPOINT (Every Epoch) 
+        # Record History
+        history["train_loss"].append(train_stats["loss"])
+        history["val_loss"].append(val_stats["loss"])
+        history["train_iou"].append(train_stats["iou"])
+        history["val_iou"].append(val_stats["iou"])
+        
+        with open(history_path, "w") as f:
+            json.dump(history, f)
+
         save_checkpoint(last_ckpt_path, model, optimizer, epoch, best_val_loss)
 
-        # SAVE BEST MODEL (Only on improvement)
         if val_stats["loss"] < best_val_loss - 1e-4:
             best_val_loss = val_stats["loss"]
             no_improve = 0
-            # Save just weights for the 'best' model to keep it light for inference
             torch.save(model.state_dict(), best_ckpt_path) 
             print(f"   New best model saved")
         else:
@@ -139,10 +153,24 @@ def main():
     duration = str(datetime.timedelta(seconds=int(time.time() - start_total)))
     print(f"\nTraining finished in {duration}")
 
-    # 5. Final Evaluation & JSON Report
+    # Plot Training vs Eval Loss Graph
+    if len(history["train_loss"]) > 0:
+        graph_path = exp_dir / f"{args.exp_name}_graph.png"
+        plt.figure(figsize=(10, 6))
+        plt.plot(history["train_loss"], label="Train Loss", color="red")
+        plt.plot(history["val_loss"], label="Val Loss", color="blue")
+        plt.title(f"Loss Curve: {args.exp_name}")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.savefig(graph_path)
+        plt.close()
+        print(f"Graph saved to {graph_path}")
+
+    # 5. Final Evaluation
     if best_ckpt_path.exists():
         print("Running final test evaluation...")
-        # Load the best weights for evaluation
         model.load_state_dict(torch.load(best_ckpt_path, map_location=device))
         model.eval()
         
@@ -157,15 +185,11 @@ def main():
                 for k in metrics: metrics[k] += batch_res[k]
                 count += 1
         
-        # Average metrics
         final_metrics = {k: round(v / count, 4) for k, v in metrics.items()}
-        
-        # Add metadata
         final_metrics["train_duration"] = duration
         final_metrics["epochs_trained"] = epoch + 1
         final_metrics["best_val_loss"] = round(best_val_loss, 4)
 
-        # Save to JSON
         json_path = exp_dir / "metrics.json"
         with open(json_path, "w") as f:
             json.dump(final_metrics, f, indent=2)
