@@ -6,6 +6,7 @@ from PIL import Image
 import numpy as np
 import time
 import json
+import pandas as pd
 from pathlib import Path
 import sys
 
@@ -58,7 +59,7 @@ MODEL_VERSIONS = {
 # 2. HELPER FUNCTIONS
 # ==========================================
 @st.cache_resource
-def load_model_and_metrics(version_name, device):
+def load_model_and_stats(version_name, device):
     info = MODEL_VERSIONS[version_name]
     folder = Path(info["exp_folder"])
     
@@ -72,7 +73,7 @@ def load_model_and_metrics(version_name, device):
     ckpt_path = folder / "best_model.pt"
     
     if not ckpt_path.exists():
-        return None, None, f"Checkpoint not found at {ckpt_path}"
+        return None, None, None, None, f"Checkpoint not found at {ckpt_path}"
         
     try:
         # Try using the helper method if it exists (for v4 compatibility)
@@ -90,7 +91,7 @@ def load_model_and_metrics(version_name, device):
         model.to(device)
         model.eval()
     except Exception as e:
-        return None, None, f"Error loading weights: {e}"
+        return None, None, None, None, f"Error loading weights: {e}"
 
     # B. Load Metrics
     metrics = {}
@@ -99,7 +100,21 @@ def load_model_and_metrics(version_name, device):
         with open(json_path, "r") as f:
             metrics = json.load(f)
 
-    return model, metrics, None
+    # C. Load History (JSON)
+    history = {}
+    hist_path = folder / "history.json"
+    if hist_path.exists():
+        with open(hist_path, "r") as f:
+            history = json.load(f)
+
+    # D. Load Static Graph (PNG)
+    exp_name = folder.name
+    graph_path = folder / f"{exp_name}_graph.png"
+    graph_image = None
+    if graph_path.exists():
+        graph_image = Image.open(graph_path)
+            
+    return model, metrics, history, graph_image, None
 
 def process_image(image, size):
     t = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor()])
@@ -123,13 +138,13 @@ st.sidebar.markdown(f"**Device:** `{device}`")
 selected_ver = st.sidebar.selectbox("Select Version", list(MODEL_VERSIONS.keys()))
 
 # Load Assets
-model, metrics, err = load_model_and_metrics(selected_ver, device)
+model, metrics, history, graph_img, err = load_model_and_stats(selected_ver, device)
 
 if err:
     st.error(err)
 else:
     # --- METRICS SECTION ---
-    st.markdown("### 📊 Model Performance (Test Set)")
+    st.markdown("### 📊 Model Performance")
     if metrics:
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("IoU", metrics.get("iou", "N/A"))
@@ -137,11 +152,42 @@ else:
         c3.metric("Precision", metrics.get("precision", "N/A"))
         c4.metric("Recall", metrics.get("recall", "N/A"))
         c5.metric("MAE", metrics.get("mae", "N/A"))
-        
-        with st.expander("See full details"):
-            st.json(metrics)
     else:
         st.warning("No metrics.json found for this version.")
+
+    # --- GRAPHS SECTION ---
+    with st.expander("📈 Training Curves", expanded=True):
+        # Priority 1: Show the static PNG (Centered and Smaller)
+        if graph_img is not None:
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.image(graph_img, caption=f"Training Graph for {selected_ver}", use_container_width=True)
+        
+        # Priority 2: Fallback to interactive chart if JSON exists but PNG doesn't
+        elif history and "train_loss" in history:
+            st.info("Static graph not found. Plotting from history.json...")
+            
+            spacer_l, content, spacer_r = st.columns([1, 6, 1])
+            
+            with content:
+                h_c1, h_c2 = st.columns(2)
+                
+                df_loss = pd.DataFrame({
+                    "Train Loss": history["train_loss"],
+                    "Val Loss": history["val_loss"]
+                })
+                h_c1.markdown("#### Loss Curve")
+                h_c1.line_chart(df_loss)
+                
+                if "train_iou" in history:
+                    df_iou = pd.DataFrame({
+                        "Train IoU": history["train_iou"],
+                        "Val IoU": history["val_iou"]
+                    })
+                    h_c2.markdown("#### IoU Curve")
+                    h_c2.line_chart(df_iou)
+        else:
+            st.info("No training history available for this model version.")
 
     st.markdown("---")
     
