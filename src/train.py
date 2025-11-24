@@ -79,6 +79,7 @@ def main():
     # Versioning & Experiments
     parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
     parser.add_argument("--use-bn", action="store_true", help="Add Batch Normalization")
+    parser.add_argument("--use-skip", action="store_true", help="Use Skip Connections (U-Net)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
 
     args = parser.parse_args()
@@ -96,7 +97,7 @@ def main():
     train_loader, val_loader, test_loader = create_dataloaders(
         root_dir=args.data_root, size=args.size, batch_size=args.batch_size
     )
-    model = create_model(use_bn=args.use_bn).to(device)
+    model = create_model(use_bn=args.use_bn, use_skip=args.use_skip).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
 
     # 3. Resume Logic or Start Fresh

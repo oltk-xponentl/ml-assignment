@@ -17,30 +17,35 @@ from sod_model import create_model
 # 1. VERSION CONFIGURATION
 # ==========================================
 MODEL_VERSIONS = {
-    "v1: Baseline": {
+    "v1: Baseline (128px)": {
         "exp_folder": "experiments/v1_baseline",
         "size": 128,
         "config": {"use_bn": False}
     },
-    "v2: HighRes": {
+    "v2: HighRes (224px)": {
         "exp_folder": "experiments/v2_highres",
         "size": 224,
         "config": {"use_bn": False}
     },
-    "v2: LowRes": {
+    "v2: LowRes (64px)": {
         "exp_folder": "experiments/v2_lowres",
         "size": 64,
         "config": {"use_bn": False}
     },
     "v2.5: Augmentation": {
-    "exp_folder": "experiments/v2.5_augmentation",
-    "size": 224,
-    "config": {"use_bn": False}
+        "exp_folder": "experiments/v2.5_augmentation",
+        "size": 224,
+        "config": {"use_bn": False}
     },
     "v3: Batch Norm": {
         "exp_folder": "experiments/v3_batchnorm",
         "size": 224,
-        "config": {"use_bn": True} # 
+        "config": {"use_bn": True}
+    },
+    "v4: U-Net": {
+        "exp_folder": "experiments/v4_unet",
+        "size": 224,
+        "config": {"use_bn": True, "use_skip": True}
     }
 }
 
@@ -53,26 +58,42 @@ def load_model_and_metrics(version_name, device):
     folder = Path(info["exp_folder"])
     
     # A. Load Model
-    model = create_model(**info["config"])
+    try:
+        model = create_model(**info["config"])
+    except TypeError:
+        # Fallback if config has keys the model doesn't accept yet
+        model = create_model()
+
     ckpt_path = folder / "best_model.pt"
     
     if not ckpt_path.exists():
         return None, None, f"Checkpoint not found at {ckpt_path}"
         
     try:
-        model.load_state_dict(torch.load(ckpt_path, map_location=device))
+        # Try using the helper method if it exists (for v4 compatibility)
+        if hasattr(model, 'load_weights'):
+            model.load_weights(ckpt_path, device)
+        else:
+            # Fallback for older model files
+            checkpoint = torch.load(ckpt_path, map_location=device)
+            if "model_state" in checkpoint:
+                state_dict = checkpoint["model_state"]
+            else:
+                state_dict = checkpoint
+            model.load_state_dict(state_dict)
+            
         model.to(device)
         model.eval()
     except Exception as e:
         return None, None, f"Error loading weights: {e}"
 
-    # B. Load Metrics JSON
+    # B. Load Metrics
     metrics = {}
     json_path = folder / "metrics.json"
     if json_path.exists():
         with open(json_path, "r") as f:
             metrics = json.load(f)
-            
+
     return model, metrics, None
 
 def process_image(image, size):
@@ -112,7 +133,7 @@ else:
         c4.metric("Recall", metrics.get("recall", "N/A"))
         c5.metric("MAE", metrics.get("mae", "N/A"))
         
-        with st.expander("See full training details"):
+        with st.expander("See full details"):
             st.json(metrics)
     else:
         st.warning("No metrics.json found for this version.")
