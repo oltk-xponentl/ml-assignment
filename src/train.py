@@ -7,8 +7,9 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.optim import Adam
+from torch.optim.lr_scheduler import ReduceLROnPlateau  # <--- NEW IMPORT
 from tqdm.auto import tqdm
-import matplotlib.pyplot as plt # <--- Added for plotting
+import matplotlib.pyplot as plt
 
 from data_loader import create_dataloaders
 from sod_model import create_model
@@ -74,7 +75,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--size", type=int, default=128)
-    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience") 
     
     # Versioning & Experiments
     parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
@@ -101,6 +102,9 @@ def main():
     )
     model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
+    
+    # If Val Loss doesn't improve for 5 epochs, multiply LR by 0.1.
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
 
     # 3. Resume Logic
     start_epoch = 0
@@ -124,6 +128,9 @@ def main():
         train_stats = train_one_epoch(model, train_loader, optimizer, device)
         val_stats = eval_one_epoch(model, val_loader, device)
         
+        # This checks the val loss and lowers LR if needed
+        scheduler.step(val_stats["loss"])
+        
         print(f"Epoch {epoch+1}: "
               f"Train Loss {train_stats['loss']:.4f}, IoU {train_stats['iou']:.4f} | "
               f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f}")
@@ -146,6 +153,7 @@ def main():
             print(f"   New best model saved")
         else:
             no_improve += 1
+            # Check against CLI patience (default 15)
             if no_improve >= args.patience:
                 print("Early stopping triggered.")
                 break
@@ -153,7 +161,7 @@ def main():
     duration = str(datetime.timedelta(seconds=int(time.time() - start_total)))
     print(f"\nTraining finished in {duration}")
 
-    # Plot Training vs Eval Loss Graph
+    # Plot Graph
     if len(history["train_loss"]) > 0:
         graph_path = exp_dir / f"{args.exp_name}_graph.png"
         plt.figure(figsize=(10, 6))
