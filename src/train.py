@@ -92,9 +92,9 @@ def main():
     parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
     parser.add_argument("--data-root", type=str, default="data/ecssd")
     parser.add_argument("--epochs", type=int, default=25)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--size", type=int, default=224)
+    parser.add_argument("--size", type=int, default=320)
     parser.add_argument("--patience", type=int, default=15)
     
     parser.add_argument("--exp-name", type=str, required=True)
