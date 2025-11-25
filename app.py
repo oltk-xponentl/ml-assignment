@@ -73,6 +73,11 @@ MODEL_VERSIONS = {
         "size": 320,
         "config": {"use_bn": True, "use_skip": True, "deep": True}
     },
+    "v7: RandomResizedCrop augmentation, Strict Mask Interpolation, AdamW Regularization": {
+        "exp_folder": "experiments/v7_ecssd", 
+        "size": 320,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
+    }
 }
 
 # ==========================================
