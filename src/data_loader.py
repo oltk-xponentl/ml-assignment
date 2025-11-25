@@ -160,16 +160,33 @@ def get_ecssd_samples():
     return samples
 
 def get_duts_samples():
-    """Adapter for FiftyOne DUTS"""
+    """Adapter for DUTS (Prioritize Local, Fallback to FiftyOne)"""
+    
+    # OPTION A: Local File Check
+    local_img_dir = "DUTS-TR-Image"
+    local_mask_dir = "DUTS-TR-Mask"
+    
+    if os.path.exists(local_img_dir) and os.path.exists(local_mask_dir):
+        print(f"Found local DUTS data in {local_img_dir}. using local files.")
+        samples = []
+        fnames = [f for f in os.listdir(local_img_dir) if f.endswith(".jpg")]
+        for fname in fnames:
+            img_path = os.path.join(local_img_dir, fname)
+            mask_name = fname.replace(".jpg", ".png")
+            mask_path = os.path.join(local_mask_dir, mask_name)
+            if os.path.exists(mask_path):
+                samples.append({"img": img_path, "mask": mask_path})
+        return samples
+
+    # OPTION B: FiftyOne Fallback
     if fo is None:
-        raise ImportError("fiftyone is not installed. Run `pip install fiftyone`.")
+        raise ImportError("fiftyone not installed.")
     
     print("Loading DUTS-TR from Hugging Face via FiftyOne...")
-    # This handles the download automatically using the token set in setup_huggingface_auth()
-    dataset = fouh.load_from_hub("Voxel51/DUTS", split="train")
-    
+    dataset = fouh.load_from_hub("Voxel51/DUTS", split="train")    
     samples = []
     print("Extracting paths from FiftyOne...")
+    
     for sample in dataset:
         img_path = sample.filepath
         
