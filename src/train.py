@@ -20,7 +20,6 @@ def train_one_epoch(model, loader, optimizer, device, scaler):
     bce_loss_fn = nn.BCEWithLogitsLoss()
     total_loss, total_iou, num_samples = 0.0, 0.0, 0
     
-    # Detect if we are using AMP (Scaler exists)
     use_amp = (scaler is not None)
 
     for images, masks in tqdm(loader, desc="Train", leave=False):
@@ -28,16 +27,13 @@ def train_one_epoch(model, loader, optimizer, device, scaler):
         optimizer.zero_grad()
         
         if use_amp:
-            # GPU: Mixed Precision 
             with torch.amp.autocast("cuda"):
                 logits = model(images)
                 loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
-            
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
         else:
-            # CPU: Standard Precision 
             logits = model(images)
             loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
             loss.backward()
@@ -45,11 +41,8 @@ def train_one_epoch(model, loader, optimizer, device, scaler):
 
         batch_size = images.size(0)
         total_loss += loss.item() * batch_size
-        
-        # For metrics, we don't need gradients
         with torch.no_grad():
             total_iou += compute_iou(logits.detach(), masks.detach()) * batch_size
-            
         num_samples += batch_size
 
     return {"loss": total_loss / num_samples, "iou": total_iou / num_samples}
@@ -60,7 +53,6 @@ def eval_one_epoch(model, loader, device):
     bce_loss_fn = nn.BCEWithLogitsLoss()
     total_loss, total_iou, num_samples = 0.0, 0.0, 0
     
-    # Check if cuda to decide on autocast
     use_amp = (device.type == 'cuda')
 
     for images, masks in tqdm(loader, desc="Val", leave=False):
@@ -97,13 +89,12 @@ def load_checkpoint(path, model, optimizer):
 
 def main():
     parser = argparse.ArgumentParser(description="Train SOD model")
-    # Config
     parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
     parser.add_argument("--data-root", type=str, default="data/ecssd")
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--size", type=int, default=224) 
+    parser.add_argument("--size", type=int, default=224)
     parser.add_argument("--patience", type=int, default=15)
     
     parser.add_argument("--exp-name", type=str, required=True)
@@ -124,6 +115,7 @@ def main():
     history_path = exp_dir / "history.json" 
 
     train_loader, val_loader, test_loader = create_dataloaders(
+        dataset_name=args.dataset, 
         root_dir=args.data_root, 
         size=args.size, 
         batch_size=args.batch_size
@@ -131,11 +123,8 @@ def main():
     model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
     
     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    
-    # Scheduler 
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
     
-    # Grad Scaler (Only for CUDA)
     scaler = None
     if device.type == 'cuda':
         scaler = torch.amp.GradScaler('cuda')
@@ -183,7 +172,15 @@ def main():
         if val_stats["loss"] < best_val_loss - 1e-4:
             best_val_loss = val_stats["loss"]
             no_improve = 0
-            torch.save(model.state_dict(), best_ckpt_path) 
+            
+            # Saving dictionary wrapper for consistency 
+            torch.save({
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "epoch": epoch,
+                "best_val_loss": best_val_loss,
+            }, best_ckpt_path) 
+            
             print(f"   New best model saved")
         else:
             no_improve += 1
@@ -210,7 +207,12 @@ def main():
 
     if best_ckpt_path.exists():
         print("Running final test evaluation...")
-        model.load_state_dict(torch.load(best_ckpt_path, map_location=device))
+        checkpoint = torch.load(best_ckpt_path, map_location=device)
+        if "model_state" in checkpoint:
+            model.load_state_dict(checkpoint["model_state"])
+        else:
+            model.load_state_dict(checkpoint)
+            
         model.eval()
         
         metrics = {"precision": 0.0, "recall": 0.0, "f1": 0.0, "iou": 0.0, "mae": 0.0}
@@ -219,13 +221,11 @@ def main():
         with torch.no_grad():
             for images, masks in tqdm(test_loader, desc="Test"):
                 images, masks = images.to(device), masks.to(device)
-                
                 if device.type == 'cuda':
                     with torch.amp.autocast("cuda"):
                         logits = model(images)
                 else:
                     logits = model(images)
-                    
                 batch_res = compute_batch_metrics(logits, masks)
                 for k in metrics: metrics[k] += batch_res[k]
                 count += 1

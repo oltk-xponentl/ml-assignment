@@ -21,7 +21,7 @@ class SODDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.ds[self.indices[idx]]
         
-        # Image
+        # --- Image Loading ---
         img_arr = sample["images"].numpy()
         img_arr = np.asarray(img_arr)
         if img_arr.ndim == 3:
@@ -36,7 +36,7 @@ class SODDataset(Dataset):
         img_arr = np.clip(img_arr, 0.0, 255.0).astype("uint8")
         image = Image.fromarray(img_arr).convert("RGB")
 
-        # Mask
+        # --- Mask Loading ---
         mask_arr = sample["masks"].numpy()
         mask_arr = np.asarray(mask_arr)
         if mask_arr.ndim == 3 and mask_arr.shape[-1] == 1: mask_arr = mask_arr[..., 0]
@@ -45,39 +45,52 @@ class SODDataset(Dataset):
         mask_img = (mask_arr * 255.0).round().clip(0, 255).astype("uint8")
         mask = Image.fromarray(mask_img).convert("L")
 
-        # Augmentation
+        # --- Augmentation ---
         if self.augment:
-            resize_size = int(self.size * 1.15)
-            image = TF.resize(image, (resize_size, resize_size))
-            mask = TF.resize(mask, (resize_size, resize_size), interpolation=TF.InterpolationMode.NEAREST)
-            
+            # 1. Geometric Augmentations (Flip, Rotate)
             if random.random() < 0.5:
                 angle = random.randint(-15, 15)
                 image = TF.rotate(image, angle)
-                mask = TF.rotate(mask, angle)
+                # Nearest Neighbor for Mask Rotation
+                mask = TF.rotate(mask, angle, interpolation=TF.InterpolationMode.NEAREST)
+                
             if random.random() < 0.5:
                 image = TF.hflip(image)
                 mask = TF.hflip(mask)
+
+            # 2. Color Jitter (Image Only)
             if random.random() < 0.8:
                 if random.random() < 0.5: image = TF.adjust_brightness(image, random.uniform(0.8, 1.2))
                 if random.random() < 0.5: image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))
                 if random.random() < 0.5: image = TF.adjust_saturation(image, random.uniform(0.8, 1.2))
             
-            i, j, h, w = T.RandomCrop.get_params(image, output_size=(self.size, self.size))
-            image = TF.crop(image, i, j, h, w)
-            mask = TF.crop(mask, i, j, h, w)
+            # 3. RandomResizedCrop 
+            # Use get_params to sync the crop between image and mask
+            # scale=(0.5, 1.0) allows zooming in up to 2x or using the whole image
+            i, j, h, w = T.RandomResizedCrop.get_params(image, scale=(0.5, 1.0), ratio=(0.8, 1.2))
+            
+            # Apply crop and resize to target size
+            image = TF.resized_crop(image, i, j, h, w, (self.size, self.size))
+            # Nearest Neighbor for Mask Resize
+            mask = TF.resized_crop(mask, i, j, h, w, (self.size, self.size), interpolation=TF.InterpolationMode.NEAREST)
+            
         else:
+            # Validation: Just simple resize
             image = TF.resize(image, (self.size, self.size))
+            # Nearest Neighbor for Mask Resize
             mask = TF.resize(mask, (self.size, self.size), interpolation=TF.InterpolationMode.NEAREST)
 
+        
         image_t = TF.to_tensor(image)
         mask_t = TF.to_tensor(mask)
         
-        # Normalization (Standard ImageNet stats) 
+        # ImageNet Normalization
         image_t = TF.normalize(image_t, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
         if mask_t.shape[0] > 1: mask_t = mask_t[:1, ...]
+        # Ensure strict binary 0.0 or 1.0
         mask_t = (mask_t > 0.5).float()
+        
         return image_t, mask_t
 
 def create_dataloaders(
@@ -105,6 +118,7 @@ def create_dataloaders(
     random.seed(seed)
     random.shuffle(indices)
 
+    # 70/15/15 Split
     n_train = int(0.70 * n)
     n_val = int(0.15 * n)
     
