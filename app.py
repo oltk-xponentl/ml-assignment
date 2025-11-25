@@ -77,6 +77,11 @@ MODEL_VERSIONS = {
         "exp_folder": "experiments/v7_ecssd", 
         "size": 320,
         "config": {"use_bn": True, "use_skip": True, "deep": True}
+    },
+    "v8: Trained on DUTS": {
+        "exp_folder": "experiments/v8_duts", 
+        "size": 320,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
     }
 }
 
@@ -181,38 +186,39 @@ else:
         st.warning("No metrics.json found for this version.")
 
     # --- GRAPHS SECTION ---
-    with st.expander("📈 Training Curves", expanded=True):
-        # Priority 1: Show the static PNG (Centered and Smaller)
-        if graph_img is not None:
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.image(graph_img, caption=f"Training Graph for {selected_ver}", use_container_width=True)
+    with st.expander("Training Curves", expanded=True):
         
-        # Priority 2: Fallback to interactive chart if JSON exists but PNG doesn't
-        elif history and "train_loss" in history:
-            st.info("Static graph not found. Plotting from history.json...")
-            
-            spacer_l, content, spacer_r = st.columns([1, 6, 1])
-            
-            with content:
-                h_c1, h_c2 = st.columns(2)
-                
-                df_loss = pd.DataFrame({
-                    "Train Loss": history["train_loss"],
-                    "Val Loss": history["val_loss"]
+        has_iou_data = history and "train_iou" in history
+        
+        if has_iou_data:
+            # Used for v5+ which have history.json
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### Loss Curve")
+                if graph_img is not None:
+                    st.image(graph_img, caption="Loss (Static)", use_container_width=True)
+                else:
+                    st.info("No Loss graph available.")
+
+            with col2:
+                st.markdown("#### IoU Curve")
+                df_iou = pd.DataFrame({
+                    "Train IoU": history["train_iou"],
+                    "Val IoU": history["val_iou"]
                 })
-                h_c1.markdown("#### Loss Curve")
-                h_c1.line_chart(df_loss)
+                st.line_chart(df_iou)
                 
-                if "train_iou" in history:
-                    df_iou = pd.DataFrame({
-                        "Train IoU": history["train_iou"],
-                        "Val IoU": history["val_iou"]
-                    })
-                    h_c2.markdown("#### IoU Curve")
-                    h_c2.line_chart(df_iou)
         else:
-            st.info("No training history available for this model version.")
+            # Used for v1-v4 which are missing history.json
+            if graph_img is not None:
+                # Use columns to center the image slightly if it's too wide, 
+                # or just use st.image directly.
+                c1, c2, c3 = st.columns([1, 4, 1])
+                with c2:
+                    st.image(graph_img, caption=f"Training Graph for {selected_ver}", use_container_width=True)
+            else:
+                st.info("No training graphs available for this version.")
 
     st.markdown("---")
     

@@ -207,4 +207,4 @@ marimo/_lsp/
 __marimo__/
 
 outputs/
-checkpoints/last_checkpoint.pt
+last_checkpoint.pt
