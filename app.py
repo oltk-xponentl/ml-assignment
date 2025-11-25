@@ -59,10 +59,20 @@ MODEL_VERSIONS = {
         "config": {"use_bn": True, "use_skip": True, "deep": True}
     },
     "v5.5: Scheduler @ 300 Epochs": {
-        "exp_folder": "experiments/v5.5_scheduler",
+        "exp_folder": "experiments/v5.5_scheduler_high",
         "size": 224,
         "config": {"use_bn": True, "use_skip": True, "deep": True}
-    }
+    },
+    "v6: Deep U-Net, Scheduler, Mixed Precision, Weight Decay @ 320px": {
+        "exp_folder": "experiments/v6_ecssd", 
+        "size": 320,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
+    },
+    "v6 @ 300 Epochs": {
+        "exp_folder": "experiments/v6_ecssd_high", 
+        "size": 320,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
+    },
 }
 
 # ==========================================
