@@ -127,7 +127,7 @@ def load_model_and_stats(version_name, device):
     return model, metrics, history, graph_image, None
 
 def process_image(image, size):
-    t = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor()])
+    t = transforms.Compose([transforms.Resize((size, size)), transforms.ToTensor(), transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     return t(image).unsqueeze(0)
 
 def postprocess_mask(logits, original_size):

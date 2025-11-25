@@ -15,22 +15,41 @@ from data_loader import create_dataloaders
 from sod_model import create_model
 from metrics import iou_loss, compute_iou, compute_batch_metrics
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, scaler):
     model.train()
     bce_loss_fn = nn.BCEWithLogitsLoss()
     total_loss, total_iou, num_samples = 0.0, 0.0, 0
+    
+    # Detect if we are using AMP (Scaler exists)
+    use_amp = (scaler is not None)
 
     for images, masks in tqdm(loader, desc="Train", leave=False):
         images, masks = images.to(device), masks.to(device)
         optimizer.zero_grad()
-        logits = model(images)
-        loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
-        loss.backward()
-        optimizer.step()
+        
+        if use_amp:
+            # GPU: Mixed Precision 
+            with torch.amp.autocast("cuda"):
+                logits = model(images)
+                loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
+            
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # CPU: Standard Precision 
+            logits = model(images)
+            loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
+            loss.backward()
+            optimizer.step()
 
         batch_size = images.size(0)
         total_loss += loss.item() * batch_size
-        total_iou += compute_iou(logits.detach(), masks.detach()) * batch_size
+        
+        # For metrics, we don't need gradients
+        with torch.no_grad():
+            total_iou += compute_iou(logits.detach(), masks.detach()) * batch_size
+            
         num_samples += batch_size
 
     return {"loss": total_loss / num_samples, "iou": total_iou / num_samples}
@@ -40,11 +59,20 @@ def eval_one_epoch(model, loader, device):
     model.eval()
     bce_loss_fn = nn.BCEWithLogitsLoss()
     total_loss, total_iou, num_samples = 0.0, 0.0, 0
+    
+    # Check if cuda to decide on autocast
+    use_amp = (device.type == 'cuda')
 
     for images, masks in tqdm(loader, desc="Val", leave=False):
         images, masks = images.to(device), masks.to(device)
-        logits = model(images)
-        loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
+        
+        if use_amp:
+            with torch.amp.autocast("cuda"):
+                logits = model(images)
+                loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
+        else:
+            logits = model(images)
+            loss = bce_loss_fn(logits, masks) + 0.5 * iou_loss(logits, masks)
 
         batch_size = images.size(0)
         total_loss += loss.item() * batch_size
@@ -70,25 +98,24 @@ def load_checkpoint(path, model, optimizer):
 def main():
     parser = argparse.ArgumentParser(description="Train SOD model")
     # Config
+    parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
     parser.add_argument("--data-root", type=str, default="data/ecssd")
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--size", type=int, default=128)
-    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience")
+    parser.add_argument("--size", type=int, default=224) 
+    parser.add_argument("--patience", type=int, default=15)
     
-    # Versioning & Experiments
-    parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
-    parser.add_argument("--use-bn", action="store_true", help="Add Batch Normalization")
-    parser.add_argument("--use-skip", action="store_true", help="Use Skip Connections (U-Net)")
-    parser.add_argument("--deep", action="store_true", help="Use 4-layer Deep Architecture")
-    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+    parser.add_argument("--exp-name", type=str, required=True)
+    parser.add_argument("--use-bn", action="store_true")
+    parser.add_argument("--use-skip", action="store_true")
+    parser.add_argument("--deep", action="store_true")
+    parser.add_argument("--resume", action="store_true")
 
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device} | Experiment: {args.exp_name}")
 
-    # 1. Setup Directories
     exp_dir = Path(__file__).resolve().parents[1] / "experiments" / args.exp_name
     exp_dir.mkdir(parents=True, exist_ok=True)
     
@@ -96,24 +123,30 @@ def main():
     last_ckpt_path = exp_dir / "last_checkpoint.pt"
     history_path = exp_dir / "history.json" 
 
-    # 2. Data & Model
     train_loader, val_loader, test_loader = create_dataloaders(
         root_dir=args.data_root, 
         size=args.size, 
         batch_size=args.batch_size
     )
-    
     model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
-    optimizer = Adam(model.parameters(), lr=args.lr)
     
+    optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    
+    # Scheduler 
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
+    
+    # Grad Scaler (Only for CUDA)
+    scaler = None
+    if device.type == 'cuda':
+        scaler = torch.amp.GradScaler('cuda')
+        print("Mixed Precision (AMP) Enabled.")
+    else:
+        print("Running in Standard Precision (CPU mode).")
 
-    # 3. Resume Logic
     start_epoch = 0
     best_val_loss = float("inf")
     no_improve = 0
     
-    # Initialize history
     history = {"train_loss": [], "val_loss": [], "train_iou": [], "val_iou": []}
 
     if args.resume and last_ckpt_path.exists():
@@ -123,17 +156,13 @@ def main():
             with open(history_path, "r") as f:
                 history = json.load(f)
     
-    # 4. Training Loop
     start_total = time.time()
     
     for epoch in range(start_epoch, args.epochs):
-        train_stats = train_one_epoch(model, train_loader, optimizer, device)
+        train_stats = train_one_epoch(model, train_loader, optimizer, device, scaler)
         val_stats = eval_one_epoch(model, val_loader, device)
         
-        # Step scheduler
         scheduler.step(val_stats["loss"])
-        
-        # Get current LR for display
         current_lr = optimizer.param_groups[0]['lr']
         
         print(f"Epoch {epoch+1}: "
@@ -141,7 +170,6 @@ def main():
               f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f} | "
               f"LR: {current_lr:.1e}")
 
-        # Record History
         history["train_loss"].append(train_stats["loss"])
         history["val_loss"].append(val_stats["loss"])
         history["train_iou"].append(train_stats["iou"])
@@ -180,7 +208,6 @@ def main():
         plt.close()
         print(f"Graph saved to {graph_path}")
 
-    # 5. Final Evaluation
     if best_ckpt_path.exists():
         print("Running final test evaluation...")
         model.load_state_dict(torch.load(best_ckpt_path, map_location=device))
@@ -192,7 +219,13 @@ def main():
         with torch.no_grad():
             for images, masks in tqdm(test_loader, desc="Test"):
                 images, masks = images.to(device), masks.to(device)
-                logits = model(images)
+                
+                if device.type == 'cuda':
+                    with torch.amp.autocast("cuda"):
+                        logits = model(images)
+                else:
+                    logits = model(images)
+                    
                 batch_res = compute_batch_metrics(logits, masks)
                 for k in metrics: metrics[k] += batch_res[k]
                 count += 1
