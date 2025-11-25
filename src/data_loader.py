@@ -1,6 +1,6 @@
 import random
-from typing import List, Tuple
-import deeplake
+import os
+from typing import List, Dict
 import numpy as np
 from PIL import Image
 import torch
@@ -8,50 +8,106 @@ from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 
+# 1. DeepLake (for ECSSD)
+try:
+    import deeplake
+except ImportError:
+    deeplake = None
+
+# 2. FiftyOne (for DUTS)
+try:
+    import fiftyone as fo
+    import fiftyone.zoo as foz
+    import fiftyone.utils.huggingface as fouh
+except ImportError:
+    fo = None
+
+# 3. Google Colab Secrets (Only works on Colab)
+try:
+    from google.colab import userdata
+except ImportError:
+    userdata = None
+
+# Authentication Helper
+def setup_huggingface_auth():
+    """
+    Securely authenticates with Hugging Face.
+    Priority 1: Google Colab Secrets (HF_TOKEN)
+    Priority 2: OS Environment Variable (HF_TOKEN)
+    """
+    token = None
+    
+    # Try Colab Secrets
+    if userdata:
+        try:
+            token = userdata.get('HF_TOKEN')
+        except:
+            pass
+            
+    # Try Environment Variable (Local)
+    if not token:
+        token = os.getenv('HF_TOKEN')
+        
+    if token:
+        os.environ["HF_TOKEN"] = token
+        try:
+            import huggingface_hub
+            huggingface_hub.login(token=token)
+            print("Logged in to Hugging Face successfully.")
+        except ImportError:
+            print("huggingface_hub not installed. Skipping login.")
+    else:
+        print("No HF_TOKEN found. Public datasets will work; gated ones might fail.")
+
+# Run auth setup immediately
+setup_huggingface_auth()
+
+
 class SODDataset(Dataset):
-    def __init__(self, deeplake_ds, indices, size=224, augment=False):
-        self.ds = deeplake_ds
-        self.indices = indices
+    """
+    Source-Agnostic Dataset. 
+    Expects a list of dictionaries: [{'img': path_or_array, 'mask': path_or_array}, ...]
+    """
+    def __init__(self, samples: List[Dict], size=224, augment=False):
+        self.samples = samples
         self.size = size
         self.augment = augment
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.ds[self.indices[idx]]
+        sample = self.samples[idx]
         
-        # --- Image Loading ---
-        img_arr = sample["images"].numpy()
-        img_arr = np.asarray(img_arr)
-        if img_arr.ndim == 3:
-            if img_arr.shape[0] in (1, 3) and img_arr.shape[-1] not in (1, 3):
-                img_arr = np.transpose(img_arr, (1, 2, 0))
-        elif img_arr.ndim == 2:
-            img_arr = img_arr[..., None]
-        if img_arr.ndim == 3 and img_arr.shape[2] == 1:
-            img_arr = np.repeat(img_arr, 3, axis=2)
-        img_arr = img_arr.astype("float32")
-        if img_arr.max() <= 1.5: img_arr *= 255.0
-        img_arr = np.clip(img_arr, 0.0, 255.0).astype("uint8")
-        image = Image.fromarray(img_arr).convert("RGB")
+        # --- Load Image ---
+        if isinstance(sample["img"], str):
+            image = Image.open(sample["img"]).convert("RGB")
+        else:
+            # DeepLake returns numpy-like objects
+            img_arr = np.asarray(sample["img"])
+            # Normalize 0-1 -> 0-255 if needed
+            if img_arr.dtype != np.uint8 and img_arr.max() <= 1.5:
+                img_arr = (img_arr * 255.0).astype(np.uint8)
+            image = Image.fromarray(img_arr).convert("RGB")
 
-        # --- Mask Loading ---
-        mask_arr = sample["masks"].numpy()
-        mask_arr = np.asarray(mask_arr)
-        if mask_arr.ndim == 3 and mask_arr.shape[-1] == 1: mask_arr = mask_arr[..., 0]
-        if mask_arr.ndim > 2 and mask_arr.shape[0] == 1: mask_arr = mask_arr[0]
-        mask_arr = mask_arr.astype("float32")
-        mask_img = (mask_arr * 255.0).round().clip(0, 255).astype("uint8")
-        mask = Image.fromarray(mask_img).convert("L")
+        # --- Load Mask ---
+        if isinstance(sample["mask"], str):
+            mask = Image.open(sample["mask"]).convert("L")
+        else:
+            mask_arr = np.asarray(sample["mask"])
+            # Fix dimensions if DeepLake adds channel dim
+            if mask_arr.ndim == 3: 
+                mask_arr = mask_arr[..., 0]
+            mask_img = (mask_arr * 255.0).round().clip(0, 255).astype(np.uint8)
+            mask = Image.fromarray(mask_img).convert("L")
 
         # --- Augmentation ---
         if self.augment:
-            # 1. Geometric Augmentations (Flip, Rotate)
+            # 1. Geometric (Flip/Rotate)
             if random.random() < 0.5:
                 angle = random.randint(-15, 15)
                 image = TF.rotate(image, angle)
-                # Nearest Neighbor for Mask Rotation
+                # Nearest Neighbor for Mask Rotation (No blurring)
                 mask = TF.rotate(mask, angle, interpolation=TF.InterpolationMode.NEAREST)
                 
             if random.random() < 0.5:
@@ -64,27 +120,23 @@ class SODDataset(Dataset):
                 if random.random() < 0.5: image = TF.adjust_contrast(image, random.uniform(0.8, 1.2))
                 if random.random() < 0.5: image = TF.adjust_saturation(image, random.uniform(0.8, 1.2))
             
-            # 3. RandomResizedCrop 
-            # Use get_params to sync the crop between image and mask
-            # scale=(0.5, 1.0) allows zooming in up to 2x or using the whole image
+            # 3. RandomResizedCrop
+            # scale=(0.5, 1.0) = Zoom in up to 2x
             i, j, h, w = T.RandomResizedCrop.get_params(image, scale=(0.5, 1.0), ratio=(0.8, 1.2))
-            
-            # Apply crop and resize to target size
             image = TF.resized_crop(image, i, j, h, w, (self.size, self.size))
             # Nearest Neighbor for Mask Resize
             mask = TF.resized_crop(mask, i, j, h, w, (self.size, self.size), interpolation=TF.InterpolationMode.NEAREST)
             
         else:
-            # Validation: Just simple resize
+            # Validation: Simple Resize
             image = TF.resize(image, (self.size, self.size))
-            # Nearest Neighbor for Mask Resize
             mask = TF.resize(mask, (self.size, self.size), interpolation=TF.InterpolationMode.NEAREST)
 
-        
+        # --- Tensor & Normalization ---
         image_t = TF.to_tensor(image)
         mask_t = TF.to_tensor(mask)
         
-        # ImageNet Normalization
+        # ImageNet Stats Normalization
         image_t = TF.normalize(image_t, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
         if mask_t.shape[0] > 1: mask_t = mask_t[:1, ...]
@@ -92,6 +144,47 @@ class SODDataset(Dataset):
         mask_t = (mask_t > 0.5).float()
         
         return image_t, mask_t
+
+def get_ecssd_samples():
+    """Adapter for DeepLake ECSSD"""
+    if deeplake is None:
+        raise ImportError("deeplake is not installed.")
+    print("Loading ECSSD from Deep Lake...")
+    ds = deeplake.load("hub://activeloop/ecssd", read_only=True)
+    samples = []
+    for i in range(len(ds)):
+        samples.append({
+            "img": ds.images[i], 
+            "mask": ds.masks[i]
+        })
+    return samples
+
+def get_duts_samples():
+    """Adapter for FiftyOne DUTS"""
+    if fo is None:
+        raise ImportError("fiftyone is not installed. Run `pip install fiftyone`.")
+    
+    print("Loading DUTS-TR from Hugging Face via FiftyOne...")
+    # This handles the download automatically using the token set in setup_huggingface_auth()
+    dataset = fouh.load_from_hub("Voxel51/DUTS", split="train")
+    
+    samples = []
+    print("Extracting paths from FiftyOne...")
+    for sample in dataset:
+        img_path = sample.filepath
+        
+        mask_path = None
+        # Attempt to find mask path in FiftyOne metadata
+        if sample.ground_truth and hasattr(sample.ground_truth, "mask_path"):
+             mask_path = sample.ground_truth.mask_path
+        
+        # Fallback: DUTS directory structure assumption
+        if not mask_path:
+            mask_path = img_path.replace("DUTS-TR-Image", "DUTS-TR-Mask").replace(".jpg", ".png")
+            
+        samples.append({"img": img_path, "mask": mask_path})
+        
+    return samples
 
 def create_dataloaders(
     dataset_name: str = "ecssd",
@@ -101,39 +194,39 @@ def create_dataloaders(
     num_workers: int = 0,
     seed: int = 42,
 ):
+    # 1. Select Data Source
     if dataset_name.lower() == "duts":
-        print("Loading DUTS-TR (10k images) from Deep Lake...")
-        url = "hub://activeloop/duts-train"
+        samples = get_duts_samples()
     else:
-        print("Loading ECSSD (1k images) from Deep Lake...")
-        url = "hub://activeloop/ecssd"
+        samples = get_ecssd_samples()
 
-    ds = deeplake.load(url, read_only=True)
-    n = len(ds)
-    if n == 0: raise RuntimeError("Dataset empty")
-    
+    n = len(samples)
     print(f"Total samples: {n}")
 
+    # 2. Shuffle and Split (70/15/15)
+    # We perform this split manually on the source data to ensure consistency
     indices = list(range(n))
     random.seed(seed)
     random.shuffle(indices)
 
-    # 70/15/15 Split
     n_train = int(0.70 * n)
     n_val = int(0.15 * n)
     
-    train_indices = indices[:n_train]
-    val_indices = indices[n_train : n_train + n_val]
-    test_indices = indices[n_train + n_val :]
+    train_samples = [samples[i] for i in indices[:n_train]]
+    val_samples = [samples[i] for i in indices[n_train : n_train + n_val]]
+    test_samples = [samples[i] for i in indices[n_train + n_val :]]
 
-    print(f"Split: Train {len(train_indices)}, Val {len(val_indices)}, Test {len(test_indices)}")
+    print(f"Split: Train {len(train_samples)}, Val {len(val_samples)}, Test {len(test_samples)}")
 
-    train_ds = SODDataset(ds, train_indices, size=size, augment=True)
-    val_ds = SODDataset(ds, val_indices, size=size, augment=False)
-    test_ds = SODDataset(ds, test_indices, size=size, augment=False)
+    # 3. Create Dataset Objects
+    train_ds = SODDataset(train_samples, size=size, augment=True)
+    val_ds = SODDataset(val_samples, size=size, augment=False)
+    test_ds = SODDataset(test_samples, size=size, augment=False)
 
+    # 4. Create DataLoaders
+    # Pin memory improves transfer speed to GPU
     return (
-        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers),
-        DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers),
-        DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True),
+        DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True),
+        DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     )

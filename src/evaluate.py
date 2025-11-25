@@ -67,43 +67,25 @@ def visualize_predictions(
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate SOD model on test set")
-    parser.add_argument(
-        "--data-root",
-        type=str,
-        default=str(Path(__file__).resolve().parents[1] / "data" / "ecssd"),
-        help="Root directory of ECSSD dataset",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default=str(
-            Path(__file__).resolve().parents[1] / "checkpoints" / "best_model.pt"
-        ),
-        help="Path to model checkpoint",
-    )
-    parser.add_argument(
-        "--size",
-        type=int,
-        default=128,
-        help="Image size used during training",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=8,
-        help="Batch size",
-    )
-    parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="If set, save a few prediction visualizations",
-    )
+    parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
+    
+    parser.add_argument("--data-root", type=str, default="data/ecssd")
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--size", type=int, default=128)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--visualize", action="store_true")
+    parser.add_argument("--use-bn", action="store_true")
+    parser.add_argument("--use-skip", action="store_true")
+    parser.add_argument("--deep", action="store_true")
+    
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device", device)
+    print(f"Using device: {device} | Testing on Dataset: {args.dataset}")
 
+    # Pass dataset_name to loader
     _, _, test_loader = create_dataloaders(
+        dataset_name=args.dataset,
         root_dir=args.data_root,
         size=args.size,
         batch_size=args.batch_size,
