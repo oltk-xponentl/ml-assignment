@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau  # <--- NEW IMPORT
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
@@ -75,7 +75,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--size", type=int, default=128)
-    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience") 
+    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience")
     
     # Versioning & Experiments
     parser.add_argument("--exp-name", type=str, required=True, help="e.g. v1_baseline")
@@ -98,13 +98,15 @@ def main():
 
     # 2. Data & Model
     train_loader, val_loader, test_loader = create_dataloaders(
-        root_dir=args.data_root, size=args.size, batch_size=args.batch_size
+        root_dir=args.data_root, 
+        size=args.size, 
+        batch_size=args.batch_size
     )
+    
     model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
     optimizer = Adam(model.parameters(), lr=args.lr)
     
-    # If Val Loss doesn't improve for 5 epochs, multiply LR by 0.1.
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5)
 
     # 3. Resume Logic
     start_epoch = 0
@@ -128,12 +130,16 @@ def main():
         train_stats = train_one_epoch(model, train_loader, optimizer, device)
         val_stats = eval_one_epoch(model, val_loader, device)
         
-        # This checks the val loss and lowers LR if needed
+        # Step scheduler
         scheduler.step(val_stats["loss"])
+        
+        # Get current LR for display
+        current_lr = optimizer.param_groups[0]['lr']
         
         print(f"Epoch {epoch+1}: "
               f"Train Loss {train_stats['loss']:.4f}, IoU {train_stats['iou']:.4f} | "
-              f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f}")
+              f"Val Loss {val_stats['loss']:.4f}, IoU {val_stats['iou']:.4f} | "
+              f"LR: {current_lr:.1e}")
 
         # Record History
         history["train_loss"].append(train_stats["loss"])
@@ -153,7 +159,6 @@ def main():
             print(f"   New best model saved")
         else:
             no_improve += 1
-            # Check against CLI patience (default 15)
             if no_improve >= args.patience:
                 print("Early stopping triggered.")
                 break
@@ -161,7 +166,6 @@ def main():
     duration = str(datetime.timedelta(seconds=int(time.time() - start_total)))
     print(f"\nTraining finished in {duration}")
 
-    # Plot Graph
     if len(history["train_loss"]) > 0:
         graph_path = exp_dir / f"{args.exp_name}_graph.png"
         plt.figure(figsize=(10, 6))
