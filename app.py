@@ -52,6 +52,16 @@ MODEL_VERSIONS = {
         "exp_folder": "experiments/v5_deep_unet",
         "size": 224,
         "config": {"use_bn": True, "use_skip": True, "deep": True}
+    },
+    "v5.5: Deep U-Net with Scheduler": {
+        "exp_folder": "experiments/v5.5_scheduler",
+        "size": 224,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
+    },
+    "v5.5: Scheduler @ 300 Epochs": {
+        "exp_folder": "experiments/v5.5_scheduler",
+        "size": 224,
+        "config": {"use_bn": True, "use_skip": True, "deep": True}
     }
 }
 
