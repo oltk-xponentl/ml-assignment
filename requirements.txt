@@ -1,0 +1,14 @@
+torch==2.9.1
+torchvision==0.24.1
+torchmetrics==1.8.2
+numpy==2.2.6
+pillow==10.4.0
+pandas==2.3.3
+matplotlib==3.10.7
+tqdm==4.67.1
+streamlit==1.51.0
+deeplake==3.9.52
+fiftyone==1.10.0
+fiftyone-brain==0.21.4
+fiftyone_db==1.4.0
+huggingface_hub==1.1.5

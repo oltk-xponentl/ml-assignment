@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
 from data_loader import create_dataloaders
-from src.sod_model import create_model
+from sod_model import create_model
 from metrics import compute_batch_metrics
 
 
@@ -69,7 +69,6 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate SOD model on test set")
     parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
     
-    parser.add_argument("--data-root", type=str, default="data/ecssd")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--size", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -86,14 +85,13 @@ def main():
     # Pass dataset_name to loader
     _, _, test_loader = create_dataloaders(
         dataset_name=args.dataset,
-        root_dir=args.data_root,
         size=args.size,
         batch_size=args.batch_size,
         num_workers=0,
     )
 
-    model = create_model().to(device)
-
+    model = create_model(use_bn=args.use_bn, use_skip=args.use_skip, deep=args.deep).to(device)
+    
     ckpt_path = Path(args.checkpoint)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found at {ckpt_path}")

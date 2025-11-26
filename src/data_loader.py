@@ -85,6 +85,11 @@ class SODDataset(Dataset):
         else:
             # DeepLake returns numpy-like objects
             img_arr = np.asarray(sample["img"])
+
+        # PIL cannot handle (H, W, 1). It needs (H, W) for grayscale or (H, W, 3) for RGB.
+            if img_arr.ndim == 3 and img_arr.shape[-1] == 1:
+                img_arr = img_arr.squeeze(-1)
+
             # Normalize 0-1 -> 0-255 if needed
             if img_arr.dtype != np.uint8 and img_arr.max() <= 1.5:
                 img_arr = (img_arr * 255.0).astype(np.uint8)
@@ -152,10 +157,10 @@ def get_ecssd_samples():
     print("Loading ECSSD from Deep Lake...")
     ds = deeplake.load("hub://activeloop/ecssd", read_only=True)
     samples = []
-    for i in range(len(ds)):
+    for img, mask in zip(ds.images, ds.masks):
         samples.append({
-            "img": ds.images[i], 
-            "mask": ds.masks[i]
+            "img": img.numpy(), # Convert to numpy immediately to store in list
+            "mask": mask.numpy()
         })
     return samples
 
@@ -205,7 +210,6 @@ def get_duts_samples():
 
 def create_dataloaders(
     dataset_name: str = "ecssd",
-    root_dir: str = "",
     size: int = 224,
     batch_size: int = 8,
     num_workers: int = 0,

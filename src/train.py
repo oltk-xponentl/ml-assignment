@@ -90,12 +90,11 @@ def load_checkpoint(path, model, optimizer):
 def main():
     parser = argparse.ArgumentParser(description="Train SOD model")
     parser.add_argument("--dataset", type=str, default="ecssd", help="ecssd or duts")
-    parser.add_argument("--data-root", type=str, default="data/ecssd")
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--size", type=int, default=320)
-    parser.add_argument("--patience", type=int, default=15)
+    parser.add_argument("--patience", type=int, default=10)
     
     parser.add_argument("--exp-name", type=str, required=True)
     parser.add_argument("--use-bn", action="store_true")
@@ -116,7 +115,6 @@ def main():
 
     train_loader, val_loader, test_loader = create_dataloaders(
         dataset_name=args.dataset, 
-        root_dir=args.data_root, 
         size=args.size, 
         batch_size=args.batch_size
     )
